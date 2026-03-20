@@ -86,7 +86,6 @@ impl UpstreamTarget {
 // Load balancing algorithm implementations
 pub mod adaptive;
 pub mod consistent_hash;
-pub mod drain;
 pub mod health;
 pub mod inference_health;
 pub mod least_tokens;
@@ -272,8 +271,6 @@ pub struct PoolStats {
     pub retries: AtomicU64,
     /// Circuit breaker trips
     pub circuit_breaker_trips: AtomicU64,
-    /// Currently active requests (in-flight)
-    pub active_requests: AtomicU64,
 }
 
 /// Target information for shadow traffic
@@ -626,7 +623,7 @@ impl LoadBalancer for WeightedBalancer {
         );
 
         let health = self.health_status.read().await;
-        let healthy: Vec<_> = self
+        let healthy_indices: Vec<_> = self
             .targets
             .iter()
             .enumerate()
@@ -634,7 +631,7 @@ impl LoadBalancer for WeightedBalancer {
             .map(|(i, _)| i)
             .collect();
 
-        if healthy.is_empty() {
+        if healthy_indices.is_empty() {
             warn!(
                 total_targets = self.targets.len(),
                 algorithm = "weighted",
@@ -643,36 +640,15 @@ impl LoadBalancer for WeightedBalancer {
             return Err(ZentinelError::NoHealthyUpstream);
         }
 
-        // Weighted round-robin: map request counter to a weighted slot.
-        // E.g. weights [70, 30] → total 100 → slots [0..70) → target 0, [70..100) → target 1
-        let total_weight: u32 = healthy
-            .iter()
-            .map(|&i| self.weights.get(i).copied().unwrap_or(1))
-            .sum();
-
-        if total_weight == 0 {
-            return Err(ZentinelError::NoHealthyUpstream);
-        }
-
-        let slot = (self.current_index.fetch_add(1, Ordering::Relaxed) as u32) % total_weight;
-        let mut cumulative = 0u32;
-        let mut target_idx = healthy[0];
-        for &i in &healthy {
-            let w = self.weights.get(i).copied().unwrap_or(1);
-            cumulative += w;
-            if slot < cumulative {
-                target_idx = i;
-                break;
-            }
-        }
-
+        let idx = self.current_index.fetch_add(1, Ordering::Relaxed) % healthy_indices.len();
+        let target_idx = healthy_indices[idx];
         let target = &self.targets[target_idx];
         let weight = self.weights.get(target_idx).copied().unwrap_or(1);
 
         trace!(
             selected_target = %target.full_address(),
             weight = weight,
-            healthy_count = healthy.len(),
+            healthy_count = healthy_indices.len(),
             algorithm = "weighted",
             "Selected target via weighted round robin"
         );
@@ -1599,26 +1575,6 @@ impl UpstreamPool {
     /// Check if TLS is enabled for this upstream
     pub fn is_tls_enabled(&self) -> bool {
         self.tls_enabled
-    }
-
-    /// Get the number of currently active (in-flight) requests for this pool.
-    ///
-    /// Used by the drain tracker to determine when a pool has been fully
-    /// drained after removal from config.
-    pub fn active_request_count(&self) -> u64 {
-        self.stats.active_requests.load(Ordering::Relaxed)
-    }
-
-    /// Increment the active request counter. Called when a request is assigned
-    /// to this pool.
-    pub fn increment_active(&self) {
-        self.stats.active_requests.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Decrement the active request counter. Called when a request completes
-    /// (success or failure).
-    pub fn decrement_active(&self) {
-        self.stats.active_requests.fetch_sub(1, Ordering::Relaxed);
     }
 
     /// Shutdown the pool

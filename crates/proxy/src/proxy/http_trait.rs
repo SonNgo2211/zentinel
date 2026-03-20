@@ -137,14 +137,7 @@ impl ProxyHttp for ZentinelProxy {
         // Match route to determine service type
         let route_match = {
             let route_matcher = self.route_matcher.read();
-            let mut request_info = RequestInfo::new(method, path, host);
-
-            // Include headers for header-based route matching (Gateway API)
-            if route_matcher.needs_headers() {
-                request_info = request_info
-                    .with_headers(RequestInfo::build_headers(req_header.headers.iter()));
-            }
-
+            let request_info = RequestInfo::new(method, path, host);
             match route_matcher.match_request(&request_info) {
                 Some(m) => m,
                 None => return Ok(()), // No matching route, let upstream_peer handle it
@@ -300,7 +293,7 @@ impl ProxyHttp for ZentinelProxy {
                             request_info.method, request_info.path, request_info.host
                         )),
                     );
-                    Error::explain(ErrorType::HTTPStatus(404), "No matching route found")
+                    Error::explain(ErrorType::InternalError, "No matching route found")
                 })?;
                 let route_duration = route_start.elapsed();
                 // Lock is dropped here when block ends
@@ -464,24 +457,17 @@ impl ProxyHttp for ZentinelProxy {
                     "Upstream configured for route"
                 );
             } else {
-                // Route matched but has no valid upstream (e.g. invalid backend
-                // kind, denied cross-namespace ref). Return HTTP 500 per Gateway
-                // API spec — the route exists but cannot be fulfilled.
-                warn!(
+                error!(
                     correlation_id = %ctx.trace_id,
                     route_id = %route_match.route_id,
-                    "Route has no upstream configured, returning 500"
+                    "Route has no upstream configured"
                 );
-                crate::http_helpers::write_error(
-                    session,
-                    500,
-                    "Internal Server Error",
-                    "text/plain",
-                )
-                .await?;
                 return Err(Error::explain(
-                    ErrorType::HTTPStatus(500),
-                    "Route has no valid upstream",
+                    ErrorType::InternalError,
+                    format!(
+                        "Route '{}' has no upstream configured",
+                        route_match.route_id
+                    ),
                 ));
             }
         }
@@ -654,8 +640,6 @@ impl ProxyHttp for ZentinelProxy {
             match pool.select_peer_with_metadata(None).await {
                 Ok((mut peer, metadata)) => {
                     let selection_duration = selection_start.elapsed();
-                    // Track active request for drain lifecycle
-                    pool.increment_active();
                     // Store selected peer address for feedback reporting in logging()
                     let peer_addr = peer.address().to_string();
                     ctx.selected_upstream_address = Some(peer_addr.clone());
@@ -1830,31 +1814,24 @@ impl ProxyHttp for ZentinelProxy {
                 .unwrap_or(false);
 
             if status_header_enabled {
-                let cache_name = ctx
-                    .config
-                    .as_ref()
-                    .and_then(|c| c.cache.as_ref())
-                    .map(|c| c.status_header_name.as_str())
-                    .unwrap_or("zentinel");
-
                 let value = match cache_status {
-                    super::context::CacheStatus::HitMemory => {
-                        format!("{cache_name}; hit; detail=memory")
+                    super::context::CacheStatus::HitMemory => "zentinel; hit; detail=memory",
+                    super::context::CacheStatus::HitDisk => "zentinel; hit; detail=disk",
+                    super::context::CacheStatus::Hit => "zentinel; hit",
+                    super::context::CacheStatus::HitStale => "zentinel; fwd=stale",
+                    super::context::CacheStatus::Miss => "zentinel; fwd=miss",
+                    super::context::CacheStatus::Bypass(reason) => {
+                        // Leak a static string for the formatted bypass value
+                        // This is fine since there are only a few fixed reason strings
+                        match *reason {
+                            "method" => "zentinel; fwd=bypass; detail=method",
+                            "disabled" => "zentinel; fwd=bypass; detail=disabled",
+                            "no-route" => "zentinel; fwd=bypass; detail=no-route",
+                            _ => "zentinel; fwd=bypass",
+                        }
                     }
-                    super::context::CacheStatus::HitDisk => {
-                        format!("{cache_name}; hit; detail=disk")
-                    }
-                    super::context::CacheStatus::Hit => format!("{cache_name}; hit"),
-                    super::context::CacheStatus::HitStale => format!("{cache_name}; fwd=stale"),
-                    super::context::CacheStatus::Miss => format!("{cache_name}; fwd=miss"),
-                    super::context::CacheStatus::Bypass(reason) => match *reason {
-                        "method" => format!("{cache_name}; fwd=bypass; detail=method"),
-                        "disabled" => format!("{cache_name}; fwd=bypass; detail=disabled"),
-                        "no-route" => format!("{cache_name}; fwd=bypass; detail=no-route"),
-                        _ => format!("{cache_name}; fwd=bypass"),
-                    },
                 };
-                upstream_response.insert_header("Cache-Status", &value).ok();
+                upstream_response.insert_header("Cache-Status", value).ok();
             }
         }
 
@@ -3137,9 +3114,19 @@ impl ProxyHttp for ZentinelProxy {
             // Explicit HTTP status (e.g., from agent fail-closed blocking)
             ErrorType::HTTPStatus(status) => *status,
 
-            // Internal errors indicate server-side configuration issues (e.g.,
-            // invalid/missing backends). Gateway API spec requires 500 for these.
-            ErrorType::InternalError => 500,
+            // Internal errors - return 502 for upstream issues (more accurate than 500)
+            ErrorType::InternalError => {
+                // Check if this is an upstream-related error
+                let error_str = e.to_string();
+                if error_str.contains("upstream")
+                    || error_str.contains("DNS")
+                    || error_str.contains("resolve")
+                {
+                    502
+                } else {
+                    500
+                }
+            }
 
             // Default to 502 for unknown errors
             _ => 502,
@@ -3359,7 +3346,6 @@ impl ProxyHttp for ZentinelProxy {
             if let Some(pool) = self.upstream_pools.get(upstream_id).await {
                 pool.report_result_with_latency(peer_addr, success, Some(duration))
                     .await;
-                pool.decrement_active();
                 trace!(
                     correlation_id = %ctx.trace_id,
                     upstream = %upstream_id,

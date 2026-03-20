@@ -35,85 +35,34 @@ pub enum EventType {
     GuardrailInspect,
 }
 
-/// Agent response decision indicating how to handle a request or response.
-///
-/// This enum represents the decision an agent makes when processing a request or response.
-/// It allows agents to allow, block, redirect, or challenge requests based on their processing logic.
-///
-/// # Variants
-///
-/// - **Allow**: Continue normal processing without modification
-/// - **Block**: Reject the request/response with a custom error response
-/// - **Redirect**: Send the client to a different URL
-/// - **Challenge**: Request additional verification from the client
-///
-/// # Examples
-///
-/// ```rust
-/// use std::collections::HashMap;
-/// use zentinel_agent_protocol::Decision;
-///
-/// // Allow request to proceed normally
-/// let allow = Decision::Allow;
-///
-/// // Block with 403 and custom body
-/// let block = Decision::Block {
-///     status: 403,
-///     body: Some("Access denied".to_string()),
-///     headers: None,
-/// };
-///
-/// // Redirect to login page
-/// let redirect = Decision::Redirect {
-///     url: "https://example.com/login".to_string(),
-///     status: 302,
-/// };
-///
-/// // Challenge with CAPTCHA
-/// let mut params = HashMap::new();
-/// params.insert("type".to_string(), "recaptcha".to_string());
-/// let challenge = Decision::Challenge {
-///     challenge_type: "captcha".to_string(),
-///     params,
-/// };
-/// ```
+/// Agent decision
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Decision {
-    /// Allow the request/response to continue without modification.
-    ///
-    /// This is the default decision that indicates normal processing should proceed.
+    /// Allow the request/response to continue
     #[default]
     Allow,
-    /// Block the request/response with a custom error response.
-    ///
-    /// The proxy will return the specified status code and optional body/headers
-    /// instead of forwarding the request to the upstream or returning the original response.
+    /// Block the request/response
     Block {
-        /// HTTP status code to return (typically 4xx or 5xx)
+        /// HTTP status code to return
         status: u16,
-        /// Optional response body content
+        /// Optional response body
         body: Option<String>,
-        /// Optional response headers to include
+        /// Optional response headers
         headers: Option<HashMap<String, String>>,
     },
-    /// Redirect the client to a different URL.
-    ///
-    /// The proxy will return a redirect response with the specified URL and status code.
+    /// Redirect the request
     Redirect {
-        /// Target URL for the redirect
+        /// Redirect URL
         url: String,
-        /// HTTP redirect status code (301, 302, 303, 307, or 308)
+        /// HTTP status code (301, 302, 303, 307, 308)
         status: u16,
     },
-    /// Request additional verification from the client.
-    ///
-    /// This can be used to implement CAPTCHA, multi-factor authentication,
-    /// or other challenge-response mechanisms.
+    /// Challenge the client (e.g., CAPTCHA)
     Challenge {
-        /// Type of challenge (e.g., "captcha", "otp", "totp")
+        /// Challenge type
         challenge_type: String,
-        /// Challenge-specific parameters and configuration
+        /// Challenge parameters
         params: HashMap<String, String>,
     },
 }

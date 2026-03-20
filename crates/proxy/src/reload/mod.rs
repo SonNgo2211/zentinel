@@ -66,8 +66,6 @@ pub enum ReloadTrigger {
     Signal,
     /// Scheduled reload
     Scheduled,
-    /// Gateway API controller reconciliation
-    GatewayApi,
 }
 
 // ============================================================================
@@ -300,43 +298,9 @@ impl ConfigManager {
             }
         });
 
-        // Spawn a fallback polling loop that checks the file's content hash
-        // every 1 second. inotify can miss rename-based atomic writes on some
-        // filesystems (emptyDir, overlayfs). The poll acts as a safety net.
-        // We compare content length + first/last bytes as a cheap hash to avoid
-        // re-reading the entire file on every poll.
-        let poll_manager = Arc::new(self.clone_for_task());
-        let poll_path = self.config_path.clone();
-        tokio::spawn(async move {
-            use std::io::Read;
-            let content_sig = |p: &std::path::Path| -> Option<(u64, Vec<u8>)> {
-                let mut f = std::fs::File::open(p).ok()?;
-                let meta = f.metadata().ok()?;
-                let len = meta.len();
-                // Read first 256 bytes as a fingerprint (covers schema + listeners)
-                let mut buf = vec![0u8; 256.min(len as usize)];
-                f.read_exact(&mut buf).ok()?;
-                Some((len, buf))
-            };
-            let mut last_sig = content_sig(&poll_path);
-
-            loop {
-                tokio::time::sleep(Duration::from_secs(1)).await;
-
-                let current_sig = content_sig(&poll_path);
-                if current_sig != last_sig {
-                    last_sig = current_sig;
-                    debug!("Config file content changed (poll fallback), triggering reload");
-                    if let Err(e) = poll_manager.reload(ReloadTrigger::FileChange).await {
-                        error!(error = %e, "Poll-triggered reload failed");
-                    }
-                }
-            }
-        });
-
         info!(
             config_file = %self.config_path.display(),
-            "Auto-reload enabled: watching for configuration changes (with poll fallback)"
+            "Auto-reload enabled: watching for configuration changes"
         );
         Ok(())
     }
@@ -534,145 +498,6 @@ impl ConfigManager {
         );
 
         Ok(())
-    }
-
-    /// Apply a programmatically-generated configuration directly.
-    ///
-    /// This is the same as `reload()` but accepts a `Config` instead of
-    /// reading from disk. Used by the Gateway API controller to push
-    /// translated Kubernetes resources into the proxy without file I/O.
-    ///
-    /// Runs the full validation → hooks → atomic swap → hooks pipeline.
-    pub async fn apply_config(
-        &self,
-        new_config: Config,
-        trigger: ReloadTrigger,
-    ) -> ZentinelResult<()> {
-        // Serialize reloads — only one at a time
-        let _reload_guard = self.reload_mutex.lock().await;
-
-        let start = Instant::now();
-        let reload_num = self
-            .stats
-            .total_reloads
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            + 1;
-
-        info!(
-            trigger = ?trigger,
-            reload_num = reload_num,
-            routes = new_config.routes.len(),
-            upstreams = new_config.upstreams.len(),
-            listeners = new_config.listeners.len(),
-            "Applying programmatic configuration"
-        );
-
-        let _ = self.reload_tx.send(ReloadEvent::Started {
-            timestamp: Instant::now(),
-            trigger,
-        });
-
-        // Validate
-        if let Err(e) = self.validate_config(&new_config).await {
-            error!(error = %e, "Programmatic configuration validation failed");
-            self.stats
-                .failed_reloads
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            *self.stats.last_failure.write().await = Some(Instant::now());
-
-            let _ = self.reload_tx.send(ReloadEvent::Failed {
-                timestamp: Instant::now(),
-                error: e.to_string(),
-            });
-
-            return Err(e);
-        }
-
-        let _ = self.reload_tx.send(ReloadEvent::Validated {
-            timestamp: Instant::now(),
-        });
-
-        // Get current config for rollback and hooks
-        let old_config = self.current_config.load_full();
-
-        // Run pre-reload hooks
-        let hooks = self.reload_hooks.read().await;
-        for hook in hooks.iter() {
-            if let Err(e) = hook.pre_reload(&old_config, &new_config).await {
-                warn!(hook_name = %hook.name(), error = %e, "Pre-reload hook failed");
-            }
-        }
-        drop(hooks);
-
-        // Save previous config for rollback
-        *self.previous_config.write().await = Some(old_config.clone());
-
-        // Atomic swap
-        self.current_config.store(Arc::new(new_config.clone()));
-
-        // Run post-reload hooks
-        let hooks = self.reload_hooks.read().await;
-        for hook in hooks.iter() {
-            hook.post_reload(&old_config, &new_config).await;
-        }
-        drop(hooks);
-
-        // Update statistics
-        let duration = start.elapsed();
-        let successful_count = self
-            .stats
-            .successful_reloads
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            + 1;
-        *self.stats.last_success.write().await = Some(Instant::now());
-
-        {
-            let mut avg = self.stats.avg_duration_ms.write().await;
-            let total = successful_count as f64;
-            *avg = (*avg * (total - 1.0) + duration.as_millis() as f64) / total;
-        }
-
-        let new_version = self
-            .stats
-            .config_version
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-            + 1;
-
-        let _ = self.reload_tx.send(ReloadEvent::Applied {
-            timestamp: Instant::now(),
-            version: format!("v{}", new_version),
-        });
-
-        // Reload TLS certificates
-        let (cert_success, cert_errors) = self.cert_reloader.reload_all();
-        if !cert_errors.is_empty() {
-            for (listener_id, error) in &cert_errors {
-                error!(
-                    listener_id = %listener_id,
-                    error = %error,
-                    "TLS certificate reload failed for listener"
-                );
-            }
-        }
-
-        info!(
-            duration_ms = duration.as_millis(),
-            successful_reloads = successful_count,
-            route_count = new_config.routes.len(),
-            upstream_count = new_config.upstreams.len(),
-            cert_reload_success = cert_success,
-            cert_reload_errors = cert_errors.len(),
-            "Programmatic configuration applied successfully"
-        );
-
-        Ok(())
-    }
-
-    /// Get a handle to the underlying ArcSwap for direct reads.
-    ///
-    /// Used by the Gateway API controller to share the same config store.
-    pub fn config_store(&self) -> Arc<ArcSwap<Config>> {
-        Arc::clone(&self.current_config)
     }
 
     /// Rollback to previous configuration

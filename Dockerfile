@@ -13,7 +13,7 @@
 #   docker build --target proxy-debug -t zentinel:debug .
 
 # Build arguments
-ARG RUST_VERSION=1.94
+ARG RUST_VERSION=1.88
 ARG DEBIAN_VARIANT=slim-bookworm
 
 ################################################################################
@@ -35,15 +35,8 @@ WORKDIR /app
 
 # Copy manifest files first for better layer caching
 COPY Cargo.toml Cargo.lock ./
-COPY crates/proxy/Cargo.toml crates/proxy/Cargo.toml
-COPY crates/agent-protocol/Cargo.toml crates/agent-protocol/Cargo.toml
-COPY crates/config/Cargo.toml crates/config/Cargo.toml
-COPY crates/common/Cargo.toml crates/common/Cargo.toml
-COPY crates/gateway/Cargo.toml crates/gateway/Cargo.toml
-COPY crates/stack/Cargo.toml crates/stack/Cargo.toml
-COPY crates/wasm-runtime/Cargo.toml crates/wasm-runtime/Cargo.toml
-COPY agents/echo/Cargo.toml agents/echo/Cargo.toml
-COPY agents/data-masking/Cargo.toml agents/data-masking/Cargo.toml
+COPY crates/ crates/
+COPY agents/ agents/
 
 # Create dummy source files for dependency compilation
 # This allows Docker to cache the dependency build layer
@@ -51,15 +44,10 @@ RUN mkdir -p crates/proxy/src && \
     echo "fn main() {}" > crates/proxy/src/main.rs && \
     echo "" > crates/proxy/src/lib.rs && \
     mkdir -p crates/agent-protocol/src && echo "" > crates/agent-protocol/src/lib.rs && \
-    mkdir -p crates/agent-protocol/benches && echo "fn main() {}" > crates/agent-protocol/benches/hot_path.rs && \
     mkdir -p crates/config/src && echo "" > crates/config/src/lib.rs && \
     mkdir -p crates/common/src && echo "" > crates/common/src/lib.rs && \
-    mkdir -p crates/gateway/src && echo "fn main() {}" > crates/gateway/src/main.rs && \
-    echo "" > crates/gateway/src/lib.rs && \
     mkdir -p crates/stack/src && echo "fn main() {}" > crates/stack/src/main.rs && \
-    mkdir -p crates/wasm-runtime/src && echo "" > crates/wasm-runtime/src/lib.rs && \
-    mkdir -p agents/echo/src && echo "fn main() {}" > agents/echo/src/main.rs && \
-    mkdir -p agents/data-masking/src && echo "fn main() {}" > agents/data-masking/src/main.rs
+    mkdir -p agents/echo/src && echo "fn main() {}" > agents/echo/src/main.rs
 
 # Build dependencies only (this layer is cached)
 RUN cargo build --release --package zentinel-proxy
@@ -77,7 +65,7 @@ RUN find . -name "main.rs" -exec touch {} \; && \
 
 # Build release binaries with full optimizations
 # Binary is already stripped via Cargo.toml profile.release.strip = true
-RUN cargo build --release --package zentinel-proxy --package zentinel-echo-agent --package zentinel-gateway
+RUN cargo build --release --package zentinel-proxy --package zentinel-echo-agent
 
 ################################################################################
 # Production image: Distroless (smallest, most secure)
@@ -135,140 +123,92 @@ CMD ["-c", "/etc/zentinel/config.kdl"]
 ################################################################################
 # Debug image: Alpine with shell for troubleshooting
 ################################################################################
-FROM alpine:3.23 AS proxy-debug
+# FROM alpine:3.23 AS proxy-debug
 
-# Install minimal runtime dependencies
-RUN apk add --no-cache \
-    ca-certificates \
-    tzdata \
-    curl \
-    && adduser -D -u 65532 -g 65532 zentinel
+# # Install minimal runtime dependencies
+# RUN apk add --no-cache \
+#     ca-certificates \
+#     tzdata \
+#     curl \
+#     && adduser -D -u 65532 -g 65532 zentinel
 
-# Copy the binary
-COPY --from=builder /app/target/release/zentinel /usr/local/bin/zentinel
+# # Copy the binary
+# COPY --from=builder /app/target/release/zentinel /usr/local/bin/zentinel
 
-# Copy default configuration
-COPY config/docker/default.kdl /etc/zentinel/config.kdl
+# # Copy default configuration
+# COPY config/docker/default.kdl /etc/zentinel/config.kdl
 
-# Create directories with correct ownership
-RUN mkdir -p /var/lib/zentinel /var/log/zentinel && \
-    chown -R zentinel:zentinel /etc/zentinel /var/lib/zentinel /var/log/zentinel
+# # Create directories with correct ownership
+# RUN mkdir -p /var/lib/zentinel /var/log/zentinel && \
+#     chown -R zentinel:zentinel /etc/zentinel /var/lib/zentinel /var/log/zentinel
 
-# Environment variables
-ENV RUST_LOG=info,zentinel_proxy=info \
-    MALLOC_CONF="background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:5000"
+# # Environment variables
+# ENV RUST_LOG=info,zentinel_proxy=info \
+#     MALLOC_CONF="background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:5000"
 
-EXPOSE 8080 8443 9090
+# EXPOSE 8080 8443 9090
 
-USER zentinel
+# USER zentinel
 
-# Alpine has curl, so we can use HTTP health checks
-HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
-    CMD curl -sf http://localhost:8080/_builtin/health || exit 1
+# # Alpine has curl, so we can use HTTP health checks
+# HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
+#     CMD curl -sf http://localhost:8080/_builtin/health || exit 1
 
-ENTRYPOINT ["/usr/local/bin/zentinel"]
-CMD ["-c", "/etc/zentinel/config.kdl"]
+# ENTRYPOINT ["/usr/local/bin/zentinel"]
+# CMD ["-c", "/etc/zentinel/config.kdl"]
 
-################################################################################
-# Pre-built binary stage (for CI multi-arch builds)
-# Usage: docker build --build-arg BINARY_PATH=./zentinel --target proxy-prebuilt .
-################################################################################
-FROM gcr.io/distroless/cc-debian12:nonroot AS proxy-prebuilt
+# ################################################################################
+# # Pre-built binary stage (for CI multi-arch builds)
+# # Usage: docker build --build-arg BINARY_PATH=./zentinel --target proxy-prebuilt .
+# ################################################################################
+# FROM gcr.io/distroless/cc-debian12:nonroot AS proxy-prebuilt
 
-# Copy pre-built binary from build context
-COPY zentinel /zentinel
+# # Copy pre-built binary from build context
+# COPY zentinel /zentinel
 
-# Copy default configuration
-COPY config/docker/default.kdl /etc/zentinel/config.kdl
+# # Copy default configuration
+# COPY config/docker/default.kdl /etc/zentinel/config.kdl
 
-LABEL org.opencontainers.image.title="Zentinel" \
-      org.opencontainers.image.description="Security-first reverse proxy built on Pingora"
+# LABEL org.opencontainers.image.title="Zentinel" \
+#       org.opencontainers.image.description="Security-first reverse proxy built on Pingora"
 
-ENV RUST_LOG=info,zentinel_proxy=info \
-    MALLOC_CONF="background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:5000"
+# ENV RUST_LOG=info,zentinel_proxy=info \
+#     MALLOC_CONF="background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:5000"
 
-EXPOSE 8080 8443 9090
+# EXPOSE 8080 8443 9090
 
-USER nonroot:nonroot
+# USER nonroot:nonroot
 
-ENTRYPOINT ["/zentinel"]
-CMD ["-c", "/etc/zentinel/config.kdl"]
+# ENTRYPOINT ["/zentinel"]
+# CMD ["-c", "/etc/zentinel/config.kdl"]
 
 ################################################################################
 # Echo agent image (for testing agent functionality)
 ################################################################################
-FROM gcr.io/distroless/cc-debian12:nonroot AS echo-agent
+# FROM gcr.io/distroless/cc-debian12:nonroot AS echo-agent
 
-COPY --from=builder /app/target/release/zentinel-echo-agent /zentinel-echo-agent
+# COPY --from=builder /app/target/release/zentinel-echo-agent /zentinel-echo-agent
 
-ENV RUST_LOG=info,zentinel_echo_agent=debug \
-    SOCKET_PATH=/var/run/zentinel/echo.sock
+# ENV RUST_LOG=info,zentinel_echo_agent=debug \
+#     SOCKET_PATH=/var/run/zentinel/echo.sock
 
-USER nonroot:nonroot
+# USER nonroot:nonroot
 
-CMD ["/zentinel-echo-agent"]
+# CMD ["/zentinel-echo-agent"]
 
-################################################################################
-# Echo agent pre-built stage (for CI multi-arch builds)
-################################################################################
-FROM gcr.io/distroless/cc-debian12:nonroot AS echo-agent-prebuilt
+# ################################################################################
+# # Echo agent pre-built stage (for CI multi-arch builds)
+# ################################################################################
+# FROM gcr.io/distroless/cc-debian12:nonroot AS echo-agent-prebuilt
 
-COPY zentinel-echo-agent /zentinel-echo-agent
+# COPY --from=builder /app/target/release/zentinel-echo-agent /zentinel-echo-agent
 
-LABEL org.opencontainers.image.title="Zentinel Echo Agent" \
-      org.opencontainers.image.description="Echo agent for Zentinel proxy testing"
+# LABEL org.opencontainers.image.title="Zentinel Echo Agent" \
+#       org.opencontainers.image.description="Echo agent for Zentinel proxy testing"
 
-ENV RUST_LOG=info,zentinel_echo_agent=debug \
-    SOCKET_PATH=/var/run/zentinel/echo.sock
+# ENV RUST_LOG=info,zentinel_echo_agent=debug \
+#     SOCKET_PATH=/var/run/zentinel/echo.sock
 
-USER nonroot:nonroot
+# USER nonroot:nonroot
 
-ENTRYPOINT ["/zentinel-echo-agent"]
-
-################################################################################
-# Gateway API Controller image
-#
-# Runs the Kubernetes Gateway API controller that watches Gateway, HTTPRoute,
-# GRPCRoute, TLSRoute, and Ingress resources and translates them into
-# Zentinel proxy configuration.
-################################################################################
-FROM gcr.io/distroless/cc-debian12:nonroot AS gateway
-
-COPY --from=builder /app/target/release/zentinel-gateway /zentinel-gateway
-
-LABEL org.opencontainers.image.title="Zentinel Gateway Controller" \
-      org.opencontainers.image.description="Kubernetes Gateway API controller for Zentinel proxy" \
-      org.opencontainers.image.vendor="Raskell" \
-      org.opencontainers.image.source="https://github.com/zentinelproxy/zentinel"
-
-ENV RUST_LOG=info,zentinel_gateway=info,kube=warn \
-    MALLOC_CONF="background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:5000" \
-    METRICS_PORT=9090
-
-EXPOSE 9090
-
-USER nonroot:nonroot
-
-ENTRYPOINT ["/zentinel-gateway"]
-
-################################################################################
-# Gateway API Controller pre-built stage (for CI multi-arch builds)
-################################################################################
-FROM gcr.io/distroless/cc-debian12:nonroot AS gateway-prebuilt
-
-COPY zentinel-gateway /zentinel-gateway
-
-LABEL org.opencontainers.image.title="Zentinel Gateway Controller" \
-      org.opencontainers.image.description="Kubernetes Gateway API controller for Zentinel proxy" \
-      org.opencontainers.image.vendor="Raskell" \
-      org.opencontainers.image.source="https://github.com/zentinelproxy/zentinel"
-
-ENV RUST_LOG=info,zentinel_gateway=info,kube=warn \
-    MALLOC_CONF="background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:5000" \
-    METRICS_PORT=9090
-
-EXPOSE 9090
-
-USER nonroot:nonroot
-
-ENTRYPOINT ["/zentinel-gateway"]
+# ENTRYPOINT ["/zentinel-echo-agent"]
