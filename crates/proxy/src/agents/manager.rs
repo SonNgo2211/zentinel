@@ -1153,7 +1153,7 @@ impl AgentManager {
         info!(agent_count = agents.len(), "Initializing agent connections");
 
         let mut initialized_count = 0;
-        let mut failed_count = 0;
+        let mut failed_agents = Vec::new();
 
         for (id, agent) in agents.iter() {
             debug!(agent_id = %id, "Initializing agent connection");
@@ -1161,22 +1161,61 @@ impl AgentManager {
                 error!(
                     agent_id = %id,
                     error = %e,
-                    "Failed to initialize agent"
+                    "Failed to initialize agent at startup"
                 );
-                failed_count += 1;
-                // Continue with other agents
+                failed_agents.push(agent.clone());
             } else {
                 trace!(agent_id = %id, "Agent initialized successfully");
                 initialized_count += 1;
             }
         }
 
+        let failed_count = failed_agents.len();
         info!(
             initialized = initialized_count,
             failed = failed_count,
             total = agents.len(),
-            "Agent initialization complete"
+            "Initial agent initialization complete"
         );
+
+        // Start background retry task for failed agents
+        if !failed_agents.is_empty() {
+            info!(
+                failed_count = failed_agents.len(),
+                "Starting background retry task for failed agents"
+            );
+            
+            tokio::spawn(async move {
+                let mut pending = failed_agents;
+                let mut interval = tokio::time::interval(Duration::from_secs(5));
+                
+                while !pending.is_empty() {
+                    interval.tick().await;
+                    
+                    let mut still_pending = Vec::new();
+                    for agent in pending {
+                        if agent.is_initialized() {
+                            continue;
+                        }
+                        
+                        debug!(agent_id = %agent.id(), "Retrying agent initialization");
+                        if let Err(e) = agent.initialize().await {
+                            trace!(
+                                agent_id = %agent.id(),
+                                error = %e,
+                                "Agent initialization retry failed"
+                            );
+                            still_pending.push(agent);
+                        } else {
+                            info!(agent_id = %agent.id(), "Agent initialized successfully on retry");
+                        }
+                    }
+                    pending = still_pending;
+                }
+                
+                info!("All agents initialized, background retry task completed");
+            });
+        }
 
         Ok(())
     }

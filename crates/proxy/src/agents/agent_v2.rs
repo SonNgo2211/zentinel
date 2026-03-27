@@ -126,6 +126,11 @@ impl AgentV2 {
             _ => false,
         })
     }
+    
+    /// Check if agent is initialized in the pool.
+    pub fn is_initialized(&self) -> bool {
+        self.pool.agent_ids().contains(&self.config.id)
+    }
 
     /// Initialize agent connection(s).
     pub async fn initialize(&self) -> ZentinelResult<()> {
