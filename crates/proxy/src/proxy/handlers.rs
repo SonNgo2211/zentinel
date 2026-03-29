@@ -600,6 +600,9 @@ impl ZentinelProxy {
                     }
                 }
 
+                // Propagate body inspection signaling
+                ctx.agent_needs_more = decision.needs_more;
+
                 debug!(
                     correlation_id = %ctx.trace_id,
                     "Agent processing completed, request allowed"
