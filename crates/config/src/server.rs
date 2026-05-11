@@ -198,23 +198,29 @@ pub struct TlsConfig {
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct AcmeConfig {
-    /// Contact email for Let's Encrypt account
-    /// Required for account registration and recovery
+    /// Contact email for account registration and recovery
     #[validate(email)]
     pub email: String,
 
     /// Domain names to obtain certificates for
-    /// At least one domain is required
     #[validate(length(min = 1, message = "at least one domain is required"))]
     pub domains: Vec<String>,
 
+    /// Optional custom ACME directory URL (e.g., ZeroSSL)
+    /// If not provided, defaults to Let's Encrypt
+    #[validate(url)]
+    pub server_url: Option<String>,
+
     /// Use Let's Encrypt staging environment
-    /// Set to true for testing to avoid rate limits
+    /// Only used if server_url is not provided
     #[serde(default)]
     pub staging: bool,
 
+    /// External Account Binding (EAB) credentials
+    /// Required by some providers like ZeroSSL
+    pub eab: Option<ExternalAccountBinding>,
+
     /// Directory for storing certificates and account keys
-    /// Defaults to /var/lib/zentinel/acme
     #[serde(default = "default_acme_storage")]
     pub storage: PathBuf,
 
@@ -229,8 +235,52 @@ pub struct AcmeConfig {
     #[serde(default)]
     pub challenge_type: AcmeChallengeType,
 
+    /// Key type to use for the certificate and account
+    /// Defaults to ECDSA P-256
+    #[serde(default)]
+    pub key_type: AcmeKeyType,
+
     /// DNS provider configuration (required for DNS-01 challenges)
     pub dns_provider: Option<DnsProviderConfig>,
+}
+
+/// ACME key type
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AcmeKeyType {
+    /// ECDSA P-256 (default)
+    #[default]
+    EcdsaP256,
+    /// ECDSA P-384
+    EcdsaP384,
+}
+
+impl AcmeKeyType {
+    /// Parse from a string with loose matching
+    pub fn from_str_loose(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "ecdsa-p256" | "p256" | "ecdsa" => Some(Self::EcdsaP256),
+            "ecdsa-p384" | "p384" => Some(Self::EcdsaP384),
+            _ => None,
+        }
+    }
+
+    /// Convert to string for KDL/display
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::EcdsaP256 => "ecdsa-p256",
+            Self::EcdsaP384 => "ecdsa-p384",
+        }
+    }
+}
+
+/// External Account Binding (EAB) credentials for ACME
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalAccountBinding {
+    /// Key ID (KID) provided by the ACME CA
+    pub kid: String,
+    /// HMAC Key (base64url-encoded) provided by the ACME CA
+    pub hmac_key: String,
 }
 
 /// ACME challenge type
@@ -289,6 +339,9 @@ pub enum DnsProviderType {
     /// Hetzner DNS API
     Hetzner,
 
+    /// Cloudflare DNS API
+    Cloudflare,
+
     /// Generic webhook provider
     Webhook {
         /// Webhook URL
@@ -342,11 +395,14 @@ pub struct SniCertificate {
     /// another cert also claims them. Mutually exclusive with `hostnames`.
     pub priority_hostnames: Vec<String>,
 
-    /// Certificate file path
-    pub cert_file: PathBuf,
+    /// Certificate file path (optional if acme is configured)
+    pub cert_file: Option<PathBuf>,
 
-    /// Private key file path
-    pub key_file: PathBuf,
+    /// Private key file path (optional if acme is configured)
+    pub key_file: Option<PathBuf>,
+
+    /// ACME configuration for this certificate
+    pub acme: Option<AcmeConfig>,
 }
 
 // ============================================================================

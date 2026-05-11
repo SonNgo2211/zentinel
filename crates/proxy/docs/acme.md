@@ -75,6 +75,7 @@ acme/dns/
 └── providers/
     ├── mod.rs       # Provider factory
     ├── hetzner.rs   # Hetzner DNS provider
+    ├── cloudflare.rs # Cloudflare DNS provider
     └── webhook.rs   # Generic webhook provider
 ```
 
@@ -101,15 +102,48 @@ pub trait DnsProvider: Send + Sync + Debug {
     async fn supports_domain(&self, domain: &str) -> DnsResult<bool>;
 }
 ```
-
 #### Supported DNS Providers
 
 | Provider | Description |
 |----------|-------------|
 | `hetzner` | Hetzner DNS API |
+| `cloudflare` | Cloudflare DNS API v4 |
 | `webhook` | Generic webhook for custom DNS integrations |
 
 #### DNS-01 Challenge Flow
+...
+### Custom ACME Directory and EAB
+
+Zentinel supports custom ACME directory URLs and External Account Binding (EAB), which is required by providers like ZeroSSL.
+
+```kdl
+acme {
+    email "admin@example.com"
+    domains "example.com"
+
+    // Custom ACME directory URL
+    server-url "https://acme.zerossl.com/v2/DV90"
+
+    // External Account Binding (EAB) credentials
+    eab {
+        kid "your-eab-kid"
+        hmac-key "your-base64url-encoded-hmac-key"
+    }
+}
+```
+
+### SAN (Subject Alternative Name) Certificates
+
+Zentinel supports single certificates covering multiple domains. The renewal scheduler automatically handles this by only checking the primary domain (the first one in the list) to avoid redundant renewal requests and infinite loops.
+
+```kdl
+acme {
+    email "admin@example.com"
+    domains "example.com" "api.example.com" "www.example.com"
+}
+```
+
+### `acme/client.rs`
 
 1. **Create Order** - Request certificate with DNS-01 challenges
 2. **Create TXT Records** - Provider creates `_acme-challenge.{domain}` records
@@ -245,14 +279,62 @@ pub struct ZentinelProxy {
     /// ACME challenge manager for HTTP-01 validation
     pub acme_challenges: Option<Arc<ChallengeManager>>,
 
-    /// ACME client for certificate operations
-    pub acme_client: Option<Arc<AcmeClient>>,
+    /// ACME clients for certificate operations (one per config block)
+    pub acme_clients: Vec<Arc<AcmeClient>>,
 }
 ```
 
+## Multi-tenant ACME (SNI Support)
+
+Zentinel supports independent ACME certificate management for SNI blocks. This is ideal for multi-tenant environments where each tenant has its own domain and requires a separate certificate with potentially different account details or challenge types.
+
+### Independent Renewal Schedulers
+
+When multiple ACME blocks are configured (root level or within SNI blocks), Zentinel spawns independent background schedulers for each. This ensures that a failure or delay in one tenant's certificate issuance (e.g., waiting for DNS propagation) does not block or impact the renewal process of other tenants.
+
+### Implicit Hostname Derivation
+
+For better usability, SNI blocks with ACME can automatically derive their routing hostnames from the ACME domain list if explicit `hostnames` are not provided.
+
+```kdl
+listeners {
+    listener "https" {
+        tls {
+            // Root certificate (fallback)
+            acme {
+                email "admin@example.com"
+                domains "example.com"
+            }
+
+            // Tenant A - using HTTP-01
+            sni {
+                acme {
+                    email "tenant-a@example.com"
+                    domains "tenant-a.com"
+                }
+            }
+
+            // Tenant B - using DNS-01 for wildcard
+            sni {
+                acme {
+                    email "tenant-b@example.com"
+                    domains "*.tenant-b.com" "tenant-b.com"
+                    challenge-type "dns-01"
+                    dns-provider { ... }
+                }
+            }
+        }
+    }
+}
+```
+
+### Global Domain Validation
+
+To prevent storage path collisions and race conditions, Zentinel enforces global uniqueness for ACME-managed domains. A domain cannot appear in more than one ACME block across the entire configuration.
+
 ## Configuration
 
-ACME is configured within the `tls {}` block of a listener.
+ACME is configured within the `tls {}` block of a listener or an `sni {}` block.
 
 ### HTTP-01 Challenge (Default)
 
@@ -325,7 +407,27 @@ dns-provider {
 | `storage` | path | `/var/lib/zentinel/acme` | Directory for certificates and credentials |
 | `renew-before-days` | u32 | `30` | Days before expiry to trigger renewal |
 | `challenge-type` | string | `"http-01"` | Challenge type: `http-01` or `dns-01` |
+| `key-type` | string | `"ecdsa-p256"` | Certificate key type: `ecdsa-p256`, `ecdsa-p384` |
 | `dns-provider` | block | - | DNS provider config (required for dns-01) |
+
+### Certificate Key Types
+
+Zentinel allows specifying the encryption algorithm and key size for ACME certificates.
+
+| Value | Description |
+|-------|-------------|
+| `ecdsa-p256` | ECDSA with NIST P-256 curve (Default, fast and secure) |
+| `ecdsa-p384` | ECDSA with NIST P-384 curve (Higher security strength) |
+
+```kdl
+acme {
+    email "admin@example.com"
+    domains "example.com"
+    
+    // Use high-strength ECDSA
+    key-type "ecdsa-p384"
+}
+```
 
 ### DNS Provider Options
 

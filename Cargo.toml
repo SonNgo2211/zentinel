@@ -19,29 +19,29 @@ exclude = [
 resolver = "2"
 
 [workspace.package]
-version = "0.6.1"
+version = "0.6.13"
 edition = "2021"
 authors = ["Zentinel Contributors"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/zentinelproxy/zentinel"
 homepage = "https://github.com/zentinelproxy/zentinel"
-rust-version = "1.85"
+rust-version = "1.94.1"
 
 [workspace.dependencies]
 # Core dependencies (using our fork with security fixes, rebased on 0.8.0)
-pingora = { version = "0.8.0", git = "https://github.com/raskell-io/pingora.git", rev = "5c23fe7", features = ["proxy", "lb", "rustls"] }
-pingora-core = { version = "0.8.0", git = "https://github.com/raskell-io/pingora.git", rev = "5c23fe7", features = ["rustls"] }
-pingora-http = { version = "0.8.0", git = "https://github.com/raskell-io/pingora.git", rev = "5c23fe7" }
-pingora-proxy = { version = "0.8.0", git = "https://github.com/raskell-io/pingora.git", rev = "5c23fe7" }
-pingora-load-balancing = { version = "0.8.0", git = "https://github.com/raskell-io/pingora.git", rev = "5c23fe7" }
-pingora-timeout = { version = "0.8.0", git = "https://github.com/raskell-io/pingora.git", rev = "5c23fe7" }
-pingora-limits = { version = "0.8.0", git = "https://github.com/raskell-io/pingora.git", rev = "5c23fe7" }
-pingora-cache = { version = "0.8.0", git = "https://github.com/raskell-io/pingora.git", rev = "5c23fe7" }
-pingora-memory-cache = { version = "0.8.0", git = "https://github.com/raskell-io/pingora.git", rev = "5c23fe7" }
+pingora = { version = "0.8.0", git = "https://github.com/zentinelproxy/pingora.git", rev = "f351da3", features = ["proxy", "lb", "rustls"] }
+pingora-core = { version = "0.8.0", git = "https://github.com/zentinelproxy/pingora.git", rev = "f351da3", features = ["rustls"] }
+pingora-http = { version = "0.8.0", git = "https://github.com/zentinelproxy/pingora.git", rev = "f351da3" }
+pingora-proxy = { version = "0.8.0", git = "https://github.com/zentinelproxy/pingora.git", rev = "f351da3" }
+pingora-load-balancing = { version = "0.8.0", git = "https://github.com/zentinelproxy/pingora.git", rev = "f351da3" }
+pingora-timeout = { version = "0.8.0", git = "https://github.com/zentinelproxy/pingora.git", rev = "f351da3" }
+pingora-limits = { version = "0.8.0", git = "https://github.com/zentinelproxy/pingora.git", rev = "f351da3" }
+pingora-cache = { version = "0.8.0", git = "https://github.com/zentinelproxy/pingora.git", rev = "f351da3" }
+pingora-memory-cache = { version = "0.8.0", git = "https://github.com/zentinelproxy/pingora.git", rev = "f351da3" }
 
 # Async runtime
 # Minimal feature set for proxy workloads (trimmed from "full" for smaller binary)
-tokio = { version = "1.50", features = [
+tokio = { version = "1.51", features = [
     "rt-multi-thread",  # Multi-threaded runtime
     "net",              # TCP/UDP networking
     "io-util",          # AsyncRead/AsyncWrite utilities
@@ -78,9 +78,9 @@ config = "0.14"
 validator = { version = "0.20", features = ["derive"] }
 
 # Testing
-proptest = "1.10"
+proptest = "1.11"
 criterion = "0.8"
-insta = "1.46"
+insta = "1.47"
 
 # Security
 rustls = { version = "0.23", features = ["aws-lc-rs"] }
@@ -88,15 +88,15 @@ rustls-pemfile = "2.2"
 
 # HTTP
 http = "1.2"
-hyper = "1.5"
+hyper = "1.9"
 tower = "0.5"
 
 # Utilities
-uuid = { version = "1.22", features = ["v4", "serde"] }
+uuid = { version = "1.23", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 dashmap = "6.1"
 parking_lot = "0.12"
-arc-swap = "1.8"
+arc-swap = "1.9"
 base64 = "0.22"
 
 # Memory allocator (better performance for allocation-heavy workloads)

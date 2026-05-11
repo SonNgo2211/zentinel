@@ -9,9 +9,9 @@ use zentinel_common::types::{TlsVersion, TraceIdFormat};
 use crate::server::{
     default_acme_storage, default_graceful_shutdown_timeout, default_keepalive_timeout,
     default_max_concurrent_streams, default_max_connections, default_renewal_days,
-    default_request_timeout, default_worker_threads, AcmeChallengeType, AcmeConfig,
-    DnsProviderConfig, DnsProviderType, ListenerConfig, ListenerProtocol, PropagationCheckConfig,
-    ServerConfig, SniCertificate, TlsConfig,
+    default_request_timeout, default_worker_threads, AcmeChallengeType, AcmeConfig, AcmeKeyType,
+    DnsProviderConfig, DnsProviderType, ExternalAccountBinding, ListenerConfig, ListenerProtocol,
+    PropagationCheckConfig, ServerConfig, SniCertificate, TlsConfig,
 };
 
 use super::helpers::{get_bool_entry, get_first_arg_string, get_int_entry, get_string_entry};
@@ -324,7 +324,25 @@ fn parse_acme_config(node: &kdl::KdlNode, listener_id: &str) -> Result<AcmeConfi
     }
 
     // Optional with defaults
+    let server_url = get_string_entry(node, "server-url");
     let staging = get_bool_entry(node, "staging").unwrap_or(false);
+    // Parse EAB if present
+    let eab = if let Some(children) = node.children() {
+        children
+            .nodes()
+            .iter()
+            .find(|n| n.name().value() == "eab")
+            .map(|eab_node| -> Result<ExternalAccountBinding> {
+                let kid = get_string_entry(eab_node, "kid")
+                    .ok_or_else(|| anyhow::anyhow!("ACME EAB configuration requires 'kid'"))?;
+                let hmac_key = get_string_entry(eab_node, "hmac-key")
+                    .ok_or_else(|| anyhow::anyhow!("ACME EAB configuration requires 'hmac-key'"))?;
+                Ok(ExternalAccountBinding { kid, hmac_key })
+            })
+            .transpose()?
+    } else {
+        None
+    };
     let storage = get_string_entry(node, "storage")
         .map(PathBuf::from)
         .unwrap_or_else(default_acme_storage);
@@ -336,6 +354,19 @@ fn parse_acme_config(node: &kdl::KdlNode, listener_id: &str) -> Result<AcmeConfi
     let challenge_type = get_string_entry(node, "challenge-type")
         .map(|s| parse_challenge_type(&s))
         .unwrap_or_default();
+
+    // Parse key type
+    let key_type = if let Some(s) = get_string_entry(node, "key-type") {
+        AcmeKeyType::from_str_loose(&s).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Invalid key-type '{}' for listener '{}'. Valid types: ecdsa-p256, ecdsa-p384",
+                s,
+                listener_id
+            )
+        })?
+    } else {
+        AcmeKeyType::default()
+    };
 
     // Parse DNS provider configuration if present
     let dns_provider = if let Some(children) = node.children() {
@@ -382,10 +413,13 @@ fn parse_acme_config(node: &kdl::KdlNode, listener_id: &str) -> Result<AcmeConfi
     Ok(AcmeConfig {
         email,
         domains,
+        server_url,
         staging,
+        eab,
         storage,
         renew_before_days,
         challenge_type,
+        key_type,
         dns_provider,
     })
 }
@@ -483,6 +517,7 @@ fn parse_dns_provider_type(
 ) -> Result<DnsProviderType> {
     match type_str.to_lowercase().as_str() {
         "hetzner" => Ok(DnsProviderType::Hetzner),
+        "cloudflare" => Ok(DnsProviderType::Cloudflare),
         "webhook" => {
             let url = get_string_entry(node, "url").ok_or_else(|| {
                 anyhow::anyhow!(
@@ -608,44 +643,67 @@ fn parse_sni_certificate(node: &kdl::KdlNode, listener_id: &str) -> Result<SniCe
         ));
     }
 
-    let cert_file = get_string_entry(node, "cert-file")
-        .map(PathBuf::from)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "SNI certificate for listener '{}' requires 'cert-file'",
-                listener_id
-            )
-        })?;
+    // Parse acme configuration if present
+    let acme = if let Some(children) = children {
+        children
+            .nodes()
+            .iter()
+            .find(|n| n.name().value() == "acme")
+            .map(|n| parse_acme_config(n, listener_id))
+            .transpose()?
+    } else {
+        None
+    };
 
-    let key_file = get_string_entry(node, "key-file")
-        .map(PathBuf::from)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "SNI certificate for listener '{}' requires 'key-file'",
-                listener_id
-            )
-        })?;
+    let cert_file = get_string_entry(node, "cert-file").map(PathBuf::from);
+    let key_file = get_string_entry(node, "key-file").map(PathBuf::from);
 
-    if !priority_hostnames.is_empty() {
+    // Validate mutual exclusion and completeness
+    match (&acme, &cert_file, &key_file) {
+        (Some(_), Some(_), _) | (Some(_), _, Some(_)) => {
+            return Err(anyhow::anyhow!(
+                "SNI certificate for listener '{}' cannot specify both manual files and an 'acme' block",
+                listener_id
+            ));
+        }
+        (None, None, _) | (None, _, None) => {
+            return Err(anyhow::anyhow!(
+                "SNI certificate for listener '{}' requires either both 'cert-file' and 'key-file', or an 'acme' block",
+                listener_id
+            ));
+        }
+        _ => {} // Valid: either acme OR (cert_file AND key_file)
+    }
+
+    if let Some(ref acme_config) = acme {
         debug!(
             listener_id = %listener_id,
-            priority_hostnames = ?priority_hostnames,
-            cert_file = %cert_file.display(),
-            "Parsed SNI certificate (SAN auto-extraction with priority tie-breaking)"
-        );
-    } else if hostnames.is_empty() {
-        debug!(
-            listener_id = %listener_id,
-            cert_file = %cert_file.display(),
-            "Parsed SNI certificate (hostnames will be auto-extracted from CN/SAN)"
+            acme_domains = ?acme_config.domains,
+            "Parsed SNI certificate with ACME"
         );
     } else {
-        debug!(
-            listener_id = %listener_id,
-            hostnames = ?hostnames,
-            cert_file = %cert_file.display(),
-            "Parsed SNI certificate"
-        );
+        let cert_path = cert_file.as_ref().unwrap().display();
+        if !priority_hostnames.is_empty() {
+            debug!(
+                listener_id = %listener_id,
+                priority_hostnames = ?priority_hostnames,
+                cert_file = %cert_path,
+                "Parsed SNI certificate (SAN auto-extraction with priority tie-breaking)"
+            );
+        } else if hostnames.is_empty() {
+            debug!(
+                listener_id = %listener_id,
+                cert_file = %cert_path,
+                "Parsed SNI certificate (hostnames will be auto-extracted from CN/SAN)"
+            );
+        } else {
+            debug!(
+                listener_id = %listener_id,
+                hostnames = ?hostnames,
+                cert_file = %cert_path,
+                "Parsed SNI certificate"
+            );
+        }
     }
 
     Ok(SniCertificate {
@@ -653,6 +711,7 @@ fn parse_sni_certificate(node: &kdl::KdlNode, listener_id: &str) -> Result<SniCe
         priority_hostnames,
         cert_file,
         key_file,
+        acme,
     })
 }
 

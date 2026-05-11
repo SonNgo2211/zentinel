@@ -29,7 +29,12 @@ on:
       targets:
         description: 'JSON array of target configs'
         required: false
-        default: '[{"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "suffix": "linux-amd64"}]'
+        # Linux builds MUST run on ubuntu-22.04 (glibc 2.35) so the resulting
+        # dynamically-linked binary is compatible with our distroless runtime
+        # (gcr.io/distroless/cc-debian12 = bookworm = glibc 2.36). Building on
+        # ubuntu-latest (24.04, glibc 2.39) produces binaries that crash on
+        # startup inside the published image. See zentinelproxy/zentinel#172.
+        default: '[{"os": "ubuntu-22.04", "target": "x86_64-unknown-linux-gnu", "suffix": "linux-amd64"}]'
         type: string
 
 env:
@@ -72,11 +77,22 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-build-${{ inputs.profile }}-
 
+      # Install protoc from official releases instead of the system package.
+      # ubuntu-22.04's apt protoc (3.12) doesn't support proto3 optional
+      # fields used in agent_v2.proto. Official releases v21+ do.
       - name: Install protoc (Linux)
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
+          PROTOC_VERSION=28.3
+          case "$(uname -m)" in
+            x86_64)  PROTOC_ARCH="x86_64" ;;
+            aarch64) PROTOC_ARCH="aarch_64" ;;
+            *)       echo "Unsupported arch: $(uname -m)"; exit 1 ;;
+          esac
+          curl -LO "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-${PROTOC_ARCH}.zip"
+          sudo unzip -o "protoc-${PROTOC_VERSION}-linux-${PROTOC_ARCH}.zip" -d /usr/local
+          rm "protoc-${PROTOC_VERSION}-linux-${PROTOC_ARCH}.zip"
+          protoc --version
 
       - name: Install zigbuild for ARM64 cross-compilation
         if: runner.os == 'Linux' && matrix.config.target == 'aarch64-unknown-linux-gnu'

@@ -83,7 +83,7 @@ FROM gcr.io/distroless/cc-debian12:nonroot AS proxy
 COPY --from=builder /app/target/release/zentinel /zentinel
 
 # Copy default configuration
-COPY config/docker/default.kdl /etc/zentinel/config.kdl
+COPY config/docker/default.kdl /etc/zentinel/zentinel.kdl
 
 # Labels for container metadata
 LABEL org.opencontainers.image.title="Zentinel" \
@@ -113,12 +113,12 @@ USER nonroot:nonroot
 # Distroless has no shell, so HEALTHCHECK with curl/wget isn't possible.
 # Use one of these approaches:
 # 1. Kubernetes: Configure livenessProbe/readinessProbe with httpGet to /_builtin/health
-# 2. Docker Compose: Use `test: ["CMD", "/zentinel", "test", "-c", "/etc/zentinel/config.kdl"]`
+# 2. Docker Compose: Use `test: ["CMD", "/zentinel", "test", "-c", "/etc/zentinel/zentinel.kdl"]`
 # 3. External monitoring: Poll http://container:8080/_builtin/health
 
 # Zentinel handles SIGTERM/SIGHUP natively via signal_hook - no tini needed
 ENTRYPOINT ["/zentinel"]
-CMD ["-c", "/etc/zentinel/config.kdl"]
+CMD ["-c", "/etc/zentinel/zentinel.kdl"]
 
 ################################################################################
 # Debug image: Alpine with shell for troubleshooting
@@ -135,8 +135,8 @@ CMD ["-c", "/etc/zentinel/config.kdl"]
 # # Copy the binary
 # COPY --from=builder /app/target/release/zentinel /usr/local/bin/zentinel
 
-# # Copy default configuration
-# COPY config/docker/default.kdl /etc/zentinel/config.kdl
+# Copy default configuration
+COPY config/docker/default.kdl /etc/zentinel/zentinel.kdl
 
 # # Create directories with correct ownership
 # RUN mkdir -p /var/lib/zentinel /var/log/zentinel && \
@@ -157,17 +157,23 @@ CMD ["-c", "/etc/zentinel/config.kdl"]
 # ENTRYPOINT ["/usr/local/bin/zentinel"]
 # CMD ["-c", "/etc/zentinel/config.kdl"]
 
-# ################################################################################
-# # Pre-built binary stage (for CI multi-arch builds)
-# # Usage: docker build --build-arg BINARY_PATH=./zentinel --target proxy-prebuilt .
-# ################################################################################
+################################################################################
+# Pre-built binary stage (for CI multi-arch builds)
+# Usage: docker build --build-arg BINARY_PATH=./zentinel --target proxy-prebuilt .
+#
+# IMPORTANT: The binary copied in must be dynamically linked against a glibc
+# version <= 2.36 (bookworm). Building on ubuntu-latest (24.04, glibc 2.39)
+# produces a binary that crashes on startup inside this distroless image.
+# CI pins Linux build runners to ubuntu-22.04 (glibc 2.35) for this reason.
+# See zentinelproxy/zentinel#172.
+################################################################################
 # FROM gcr.io/distroless/cc-debian12:nonroot AS proxy-prebuilt
 
 # # Copy pre-built binary from build context
 # COPY zentinel /zentinel
 
-# # Copy default configuration
-# COPY config/docker/default.kdl /etc/zentinel/config.kdl
+# Copy default configuration
+COPY config/docker/default.kdl /etc/zentinel/zentinel.kdl
 
 # LABEL org.opencontainers.image.title="Zentinel" \
 #       org.opencontainers.image.description="Security-first reverse proxy built on Pingora"

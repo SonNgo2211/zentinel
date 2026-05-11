@@ -12,6 +12,16 @@ for details.
 
 | CalVer | Crate Version | Date | Highlights |
 |--------|---------------|------|------------|
+| [26.05_3](#26053---2026-05-05) | 0.6.13 | 2026-05-05 | Embedded and bundled KDL configs use `system` block; ACME hickory-resolver 0.26 fix |
+| [26.05_2](#26052---2026-05-03) | 0.6.12 | 2026-05-03 | Install script provisions systemd unit, system user, and starter config |
+| [26.05_1](#26051---2026-05-01) | 0.6.11 | 2026-05-01 | Per-SNI ACME certificates for multi-tenant TLS, dependency updates |
+| [26.04_7](#26047---2026-04-28) | 0.6.10 | 2026-04-28 | Security: rand fix in `zentinel-sim` |
+| [26.04_6](#26046---2026-04-25) | 0.6.9 | 2026-04-25 | Security: openssl & rand fixes, ACME schema docs, CI update |
+| [26.04_5](#26045---2026-04-20) | 0.6.8 | 2026-04-20 | Configurable ACME certificate key type (ECDSA P-256/P-384) |
+| [26.04_4](#26044---2026-04-19) | 0.6.7 | 2026-04-19 | Cloudflare DNS-01, custom ACME servers, EAB, SAN renewal fix |
+| [26.04_3](#26043---2026-04-16) | 0.6.6 | 2026-04-16 | Security: rand unsoundness fix, dependency updates |
+| [26.04_2](#26042---2026-04-10) | 0.6.5 | 2026-04-10 | Security: wasmtime 43.0.1 (critical sandbox escape fix) |
+| [26.04_1](#26041---2026-04-09) | 0.6.4 | 2026-04-09 | Numeric route priorities, host extraction fix, Docker glibc fix, conformance CI restored |
 | [26.03_4](#26034---2026-03-18) | 0.6.2 | 2026-03-18 | Configurable Cache-Status header name |
 | [26.02_18](#260218---2026-02-26) | 0.5.10 | 2026-02-26 | Remove v1 agent protocol |
 | [26.02_16](#260216---2026-02-24) | 0.5.7 | 2026-02-24 | Fix KDL parser missing agent event aliases |
@@ -33,6 +43,162 @@ for details.
 | [26.01_0](#26010---2026-01-01) | 0.2.0 | 2026-01-01 | First CalVer release |
 | [25.12](#2512) | 0.1.x | 2025-12 | Initial public releases |
 | [24.12](#2412) | 0.1.0 | 2024-12 | Initial development |
+
+---
+
+## [26.05_3] - 2026-05-05
+
+**Crate version:** 0.6.13
+
+### Fixed
+- **Embedded `DEFAULT_CONFIG_KDL` no longer emits a deprecation warning on first run.** The fallback configuration baked into the binary still declared a `server { ... }` block, which the parser accepts but warns against. Switched to `system { ... }` so fresh Docker containers and binaries with no external config file start cleanly. Resolves #231. (#232)
+- **ACME DNS propagation checker** adapted to the `hickory-resolver` 0.26 API, restoring DNS-01 challenge verification after the upstream major bump. (#229)
+
+### Changed
+- **Bump `hickory-resolver` 0.25.2 → 0.26.1.** (#228)
+- **Bundled KDL configurations use `system` block.** Sweeps the deprecated `server { ... }` keyword in `deploy/zentinel.starter.kdl` (the installer drop-in at `/etc/zentinel/zentinel.kdl`), the eight `config/examples/*.kdl` files, and `config/example-multi-file/README.md` so users copying or following these examples no longer hit the deprecation warning. Pure keyword rename — fields inside the block are unchanged and the parser still accepts both. Resolves #233. (#234)
+
+### Docs
+- **README request-flow diagram** added between the Status and Quick Start sections to illustrate how a request traverses the proxy. (#230)
+
+---
+
+## [26.05_2] - 2026-05-03
+
+**Crate version:** 0.6.12
+
+### Added
+- **Systemd service bootstrap in the install script.** `curl -fsSL https://get.zentinelproxy.io | sh` now installs `/etc/systemd/system/zentinel.service`, a sysusers snippet at `/usr/lib/sysusers.d/zentinel.conf`, and a starter config at `/etc/zentinel/zentinel.kdl` on Linux hosts running systemd. Service enable and start are opt-in via `--enable-service` (or `ZENTINEL_ENABLE_SERVICE=1`). Resolves discussion #218. (#224)
+- **`deploy/zentinel.starter.kdl`** — annotated starter configuration dropped at `/etc/zentinel/zentinel.kdl`. An existing file is preserved on re-install. (#224)
+- **`deploy/sysusers.d/zentinel.conf`** — declarative system user, applied via `systemd-sysusers` with a `useradd` fallback. (#224)
+- **`crates/proxy/docs/deployment.md`** — systemd deployment reference (file layout, lifecycle, capabilities, sandboxing). (#224)
+
+### Changed
+- **`deploy/zentinel.service`** now passes `--config /etc/zentinel/zentinel.kdl` explicitly and grants `AmbientCapabilities=CAP_NET_BIND_SERVICE` so listeners can bind ports below 1024 without root. (#224)
+- **Canonical config path renamed `config.kdl` → `zentinel.kdl`.** Aligns the unit file, Dockerfile, `docker-compose.yml`, and `deploy/deploy.sh` with the path already documented in the README. Helm chart still uses `config.kdl` internally; tracked as a follow-up. (#224)
+
+---
+
+## [26.05_1] - 2026-05-01
+
+**Crate version:** 0.6.11
+
+### Added
+- **Per-SNI ACME certificates for multi-tenant TLS.** SNI blocks can now carry their own `acme` configuration, enabling independent certificate lifecycles per tenant on the same listener. Each ACME block gets its own `RenewalScheduler` and `AcmeClient` ("Option B" architecture), so a stuck issuance on one domain (e.g. waiting on DNS propagation) does not block renewals for others. Includes global domain-uniqueness validation across all ACME blocks (case-insensitive, preventing physical storage path collisions) and implicit hostname derivation from `acme.domains` when explicit `hostnames` are omitted. (#213)
+- **Cold-start observability for ACME-managed SNI.** When an ACME-managed SNI certificate is missing at startup (the cold-start case), Zentinel logs a structured warning carrying `listener_id`, `sni_index`, and `primary_domain`, and increments a new `tls_metrics::record_sni_cert_skip` counter so operators can detect tenants stuck in shadowed state. The certificate is loaded later via hot-reload once issued. (#213)
+
+### Changed
+- **Bump `maxminddb` 0.27.3 → 0.28.1.** (#209)
+- **Bump `jsonschema` 0.46.2 → 0.46.3.** Fixes memory not reclaimed when a `Validator` for a schema with recursive `$ref` is dropped. (#219)
+- **Bump `reqwest` 0.13.2 → 0.13.3.** Fixes rustls CRL PEM parsing, hickory-dns fallback when `/etc/resolv.conf` is unreadable, HTTP/3 `STOP_SENDING` handling, IPv6 connection establishment. (#219)
+- **Bump `rustls` 0.23.39 → 0.23.40.** (#219)
+
+---
+
+## [26.04_7] - 2026-04-28
+
+**Crate version:** 0.6.10
+
+### Security
+- **Bump `rand` 0.9.2 → 0.9.4 in `zentinel-sim`** — closes Dependabot alert for [GHSA-cq8v-f236-94qc](https://github.com/advisories/GHSA-cq8v-f236-94qc) (rand unsoundness with custom logger using `rand::rng()`). Also re-syncs `zentinel-sim`'s stale path-dep version pins to the workspace so its lockfile is regenerable. (#214)
+
+---
+
+## [26.04_6] - 2026-04-25
+
+**Crate version:** 0.6.9
+
+### Security
+- **Bump `openssl` 0.10.77 → 0.10.78** — fixes 4 high-severity vulnerabilities: buffer overflows in `Deriver::derive`, `MdCtxRef::digest_final`, AES key wrap bounds, and unchecked PSK/cookie callback lengths leaking memory to peers. (#205)
+- **Bump `rand` 0.8.5 → 0.8.6** — fixes unsoundness with custom logger using `rand::rng()`. (#205)
+
+### Changed
+- **CI: bump `actions/upload-pages-artifact` from 4 to 5.** (#201)
+
+### Docs
+- **ACME configuration schema** — document `server-url`, `eab`, `key-type`, and `cloudflare` options in config schema reference. (#202)
+
+---
+
+## [26.04_5] - 2026-04-20
+
+**Crate version:** 0.6.8
+
+### Added
+- **Configurable ACME certificate key type** via `key-type` config option. Supports `ecdsa-p256` (default) and `ecdsa-p384` for higher security strength. Invalid values produce a clear config parse error. (#199)
+
+---
+
+## [26.04_4] - 2026-04-19
+
+**Crate version:** 0.6.7
+
+### Added
+- **Cloudflare DNS-01 provider** for ACME challenges, enabling wildcard certificate issuance via Cloudflare DNS API v4. Includes zone ID caching and full test coverage. (#197)
+- **Custom ACME directory URLs** via `server-url` config option, supporting non-Let's Encrypt CAs like ZeroSSL and Step-ca. (#197)
+- **External Account Binding (EAB)** support for ACME account creation, required by providers like ZeroSSL. Configured via `eab { kid "..." hmac-key "..." }` block. (#197)
+
+### Fixed
+- **SAN certificate renewal loop** where the renewal scheduler iterated all domains in a multi-domain certificate, triggering redundant renewals. Now only checks the primary domain. (#197)
+
+### Security
+- **Bump `github.com/moby/spdystream`** 0.5.0 to 0.5.1 in conformance tests, fixing a high-severity DOS on CRI vulnerability. (#196)
+
+---
+
+## [26.04_3] - 2026-04-16
+
+**Crate version:** 0.6.6
+
+### Security
+- **Bump rand to fix unsoundness advisory** — Updates pingora fork to bump `rand` 0.8→0.9 across all pingora crates, and bumps direct `rand` 0.10.0→0.10.1 and transitive `rand` 0.9.2→0.9.4. Resolves Dependabot alerts #43, #44, #45 (RUSTSEC unsoundness with custom loggers). (#192)
+- **Bump aes 0.8→0.9** — Migrates to cipher 0.5 (`BlockEncrypt`→`BlockCipherEncrypt`). (#193)
+
+### Dependencies
+- Bump `jsonschema` 0.45→0.46 (#193)
+- Bump `tiktoken-rs` 0.9→0.11 (#193)
+- Bump `actions/github-script` 8→9 (#186)
+- Bump `softprops/action-gh-release` 2→3 (#185)
+- Bump Rust toolchain to 1.94.1, MSRV to 1.94.1
+
+---
+
+## [26.04_2] - 2026-04-10
+
+**Crate version:** 0.6.5
+
+### Security
+- **Bump wasmtime 43.0.0 → 43.0.1** — Resolves 10 Dependabot advisories including CVE-2026-34971 (critical: sandbox escape on aarch64 via miscompiled guest heap access in Cranelift), 6 medium-severity issues (OOB memory access, host panics/crashes), and 3 low-severity issues (data leakage, use-after-free). (#183)
+
+---
+
+## [26.04_1] - 2026-04-09
+
+**Crate version:** 0.6.4
+
+### Added
+- **Numeric route priorities** — The `priority` directive now accepts integer weights (`priority 100`) in addition to the existing named string aliases (`priority "high"`). This matches the syntax documented across zentinelproxy.io since 25.12. Named constants: `LOW=10`, `NORMAL=50`, `HIGH=100`, `CRITICAL=1000`. Any `i32` is valid, enabling fine-grained gap-based ordering like `priority 75` (between `NORMAL` and `HIGH`). The `"critical"` string alias now works (was previously silently dropped to `Normal`). (#180)
+
+### Fixed
+- **Route matcher host extraction** — Route matching now uses `uri.host()` before falling back to the `Host` header, fixing `404 No matching route found` errors for HTTP/2 traffic and HTTP/1.1 requests with relative URIs (e.g., Matrix federation). Port stripping is handled by `HostMatcher::matches` per Gateway API semantics. (#178, fixes #173)
+- **Docker image GLIBC crash** — The published `ghcr.io/zentinelproxy/zentinel:latest` image crashed on startup with `GLIBC_2.39 not found` because CI built on `ubuntu-latest` (24.04, glibc 2.39) but packaged into `distroless/cc-debian12` (bookworm, glibc 2.36). Pinned Linux build runners to `ubuntu-22.04` (glibc 2.35). Added a Docker smoke test (`docker run --rm <image> --version`) in the validation pipeline to catch future regressions before publishing. (#179, fixes #172)
+- **Gateway controller startup crash** — The controller's initial `rebuild_reference_grants` call raced the Kubernetes API server's initialization, consistently receiving HTTP 429 "storage is (re)initializing" and crashing the pod. Made the initial rebuild non-fatal (log and continue); the watcher repopulates the index once the API is ready. (#182)
+
+### Changed
+- **Gateway API conformance CI restored** — The conformance workflow had been red on every PR since 2026-03-15 (when it was introduced). Six fixes across #181 and #182 restored it to a reliable 23-minute end-to-end run: kind cluster config file path, helm image name/tag split, Go 1.25, CRDs v1.4.1 with server-side apply, non-fatal controller startup, `-controller-name` flag removal, and timeout adjustments. Baseline established: 42/235 tests passing (all controller/status tests; data-plane routing is incomplete). (#181, #182)
+- **Priority type refactored** — `Priority` changed from a 4-variant enum (`Low/Normal/High/Critical`) to a transparent `i32` newtype with named constants. Serialization is now integer (`"priority": 50`) instead of string (`"priority": "normal"`). The gateway KDL writer emits integer weights (was incorrectly collapsing `Critical` onto `"high"`). (#180)
+
+### Dependencies
+- Bump sha2 0.10→0.11, hmac 0.12→0.13 (digest 0.11 migration) (#175)
+- Bump tokio 1.50→1.51, hyper 1.8→1.9, arc-swap 1.9.0→1.9.1, toml 1.1.0→1.1.2, insta 1.47.1→1.47.2, libc, and others (#177)
+- Bump rcgen to 0.14.7 (#174)
+- Bump wasmtime and wasmtime-wasi to 43.0.0 (#176)
+- Bump tokio-tungstenite 0.28→0.29 (#169)
+- Bump rust-minor group with 3 updates (#165)
+
+### Chores
+- Update Pingora fork URL from raskell-io to zentinelproxy (#163)
+- Bump actions/deploy-pages from 4 to 5 (#164)
 
 ---
 

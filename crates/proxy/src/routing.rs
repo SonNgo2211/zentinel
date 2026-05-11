@@ -720,7 +720,7 @@ mod tests {
     fn create_test_route(id: &str, matches: Vec<MatchCondition>) -> RouteConfig {
         RouteConfig {
             id: id.to_string(),
-            priority: Priority::Normal,
+            priority: Priority::NORMAL,
             matches,
             upstream: Some("test_upstream".to_string()),
             service_type: zentinel_config::ServiceType::Web,
@@ -793,11 +793,11 @@ mod tests {
     fn test_priority_ordering() {
         let mut route1 =
             create_test_route("low", vec![MatchCondition::PathPrefix("/".to_string())]);
-        route1.priority = Priority::Low;
+        route1.priority = Priority::LOW;
 
         let mut route2 =
             create_test_route("high", vec![MatchCondition::PathPrefix("/".to_string())]);
-        route2.priority = Priority::High;
+        route2.priority = Priority::HIGH;
 
         let routes = vec![route1, route2];
         let matcher = RouteMatcher::new(routes, None).unwrap();
@@ -820,5 +820,79 @@ mod tests {
         assert_eq!(params.get("foo"), Some(&"bar".to_string()));
         assert_eq!(params.get("baz"), Some(&"qux".to_string()));
         assert_eq!(params.get("empty"), Some(&"".to_string()));
+    }
+
+    #[test]
+    fn test_path_prefix_segment_boundary() {
+        let routes = vec![
+            create_test_route("v2", vec![MatchCondition::PathPrefix("/v2".to_string())]),
+            create_test_route(
+                "catch-all",
+                vec![MatchCondition::PathPrefix("/".to_string())],
+            ),
+        ];
+
+        let matcher = RouteMatcher::new(routes, None).unwrap();
+
+        // /v2 exact → v2
+        let req = RequestInfo::new("GET", "/v2", "example.com");
+        assert_eq!(matcher.match_request(&req).unwrap().route_id.as_str(), "v2");
+
+        // /v2/ with trailing slash → v2
+        let req = RequestInfo::new("GET", "/v2/", "example.com");
+        assert_eq!(matcher.match_request(&req).unwrap().route_id.as_str(), "v2");
+
+        // /v2/anything → v2
+        let req = RequestInfo::new("GET", "/v2/anything", "example.com");
+        assert_eq!(matcher.match_request(&req).unwrap().route_id.as_str(), "v2");
+
+        // /v2example must NOT match /v2 prefix — falls to catch-all
+        let req = RequestInfo::new("GET", "/v2example", "example.com");
+        assert_eq!(
+            matcher.match_request(&req).unwrap().route_id.as_str(),
+            "catch-all"
+        );
+
+        // /v2?query → v2
+        let req = RequestInfo::new("GET", "/v2?foo=bar", "example.com");
+        assert_eq!(matcher.match_request(&req).unwrap().route_id.as_str(), "v2");
+    }
+
+    #[test]
+    fn test_header_matching_with_specificity() {
+        let routes = vec![
+            create_test_route(
+                "catch-all",
+                vec![MatchCondition::PathPrefix("/".to_string())],
+            ),
+            create_test_route(
+                "header-v2",
+                vec![
+                    MatchCondition::Header {
+                        name: "version".to_string(),
+                        value: Some("two".to_string()),
+                    },
+                    MatchCondition::PathPrefix("/".to_string()),
+                ],
+            ),
+        ];
+
+        let matcher = RouteMatcher::new(routes, None).unwrap();
+
+        // Without headers → catch-all
+        let req = RequestInfo::new("GET", "/", "example.com");
+        assert_eq!(
+            matcher.match_request(&req).unwrap().route_id.as_str(),
+            "catch-all"
+        );
+
+        // With version:two header → header-v2 (more specific)
+        let mut headers = HashMap::new();
+        headers.insert("version".to_string(), "two".to_string());
+        let req = RequestInfo::new("GET", "/", "example.com").with_headers(headers);
+        assert_eq!(
+            matcher.match_request(&req).unwrap().route_id.as_str(),
+            "header-v2"
+        );
     }
 }

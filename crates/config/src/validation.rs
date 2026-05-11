@@ -383,6 +383,10 @@ pub fn validate_config_semantics(config: &Config) -> Result<(), validator::Valid
     trace!("Validating listeners");
     validate_listeners(config, &route_ids, &mut errors);
 
+    // Validate ACME domains (global uniqueness)
+    trace!("Validating ACME domains");
+    validate_acme_domains(config, &mut errors);
+
     // Validate filters
     trace!("Validating filters");
     validate_filters(config, &agent_ids, &mut errors);
@@ -505,7 +509,7 @@ fn validate_routes(
 
     // Validate routes have at least one match condition
     for route in &config.routes {
-        if route.matches.is_empty() && route.priority != Priority::Low {
+        if route.matches.is_empty() && route.priority != Priority::LOW {
             errors.push(format!(
                 "Route '{}' has no match conditions.\n\
                  Add at least one match condition or set priority to \"low\" for catch-all routes.",
@@ -564,6 +568,49 @@ fn validate_listeners(config: &Config, route_ids: &HashSet<&str>, errors: &mut V
                     default_route,
                     format_available(route_ids)
                 ));
+            }
+        }
+    }
+}
+
+/// Validate ACME domains across all configurations (global uniqueness)
+fn validate_acme_domains(config: &Config, errors: &mut Vec<String>) {
+    let mut domain_source: HashMap<String, String> = HashMap::new();
+
+    for listener in &config.listeners {
+        // 1. Root-level ACME for listener
+        if let Some(ref tls) = listener.tls {
+            if let Some(ref acme) = tls.acme {
+                for domain in &acme.domains {
+                    let domain_lower = domain.to_lowercase();
+                    let source = format!("listener '{}' (root acme)", listener.id);
+                    if let Some(prev_source) = domain_source.insert(domain_lower, source.clone()) {
+                        errors.push(format!(
+                            "Domain '{}' is configured in multiple ACME blocks: {} and {}.\n\
+                             Each domain must be managed by exactly one ACME block to avoid conflicts.",
+                            domain, prev_source, source
+                        ));
+                    }
+                }
+            }
+
+            // 2. SNI-level ACME certificates
+            for (i, sni) in tls.additional_certs.iter().enumerate() {
+                if let Some(ref acme) = sni.acme {
+                    for domain in &acme.domains {
+                        let domain_lower = domain.to_lowercase();
+                        let source = format!("listener '{}' (sni cert #{})", listener.id, i);
+                        if let Some(prev_source) =
+                            domain_source.insert(domain_lower, source.clone())
+                        {
+                            errors.push(format!(
+                                "Domain '{}' is configured in multiple ACME blocks: {} and {}.\n\
+                                 Each domain must be managed by exactly one ACME block to avoid conflicts.",
+                                domain, prev_source, source
+                            ));
+                        }
+                    }
+                }
             }
         }
     }
@@ -1075,7 +1122,7 @@ mod tests {
     fn test_route(id: &str, upstream: Option<&str>) -> RouteConfig {
         RouteConfig {
             id: id.to_string(),
-            priority: Priority::Normal,
+            priority: Priority::NORMAL,
             matches: vec![MatchCondition::PathPrefix("/".to_string())],
             upstream: upstream.map(String::from),
             service_type: ServiceType::Web,
@@ -1609,7 +1656,7 @@ mod tests {
         // --- RouteConfig ---
         let _route = RouteConfig {
             id: "test".to_string(),
-            priority: Priority::Normal,
+            priority: Priority::NORMAL,
             matches: vec![MatchCondition::PathPrefix("/".to_string())],
             upstream: Some("default".to_string()),
             service_type: ServiceType::Web,

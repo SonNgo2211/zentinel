@@ -47,11 +47,41 @@ Zentinel is a high-performance reverse proxy built on [Cloudflare Pingora](https
 
 Production-ready core (proxy, routing, TLS, caching, load balancing). Agents are individually versioned — WAF, Auth, and AI Gateway are stable; others are beta or alpha. See [zentinelproxy.io/agents](https://zentinelproxy.io/agents/) for per-agent status.
 
+## Request Flow
+
+```
+   ┌────────┐                                       ┌──────────┐
+   │ Client │                                       │ Upstream │
+   └────┬───┘                                       └─────▲────┘
+        │                                                 │
+        ▼                                                 │
+   ╔═══════════ Zentinel (core, single binary) ══════════╤════╗
+   ║                                                     │    ║
+   ║  Listener ─▶ Routing ─▶ Filter chain ─▶ Forward ────┘    ║
+   ║  TLS, H2     priority   rate-limit,     LB,              ║
+   ║              + LRU      cache, hooks    retries          ║
+   ║                              │                           ║
+   ╚══════════════════════════════╪═══════════════════════════╝
+                                  │ UDS / gRPC (v2 agent protocol)
+                                  ▼
+          ╔═══════ External agents (separate processes) ═══════╗
+          ║   WAF · Auth · Rate-limit · …                      ║
+          ║   crash-isolated, any language                     ║
+          ╚════════════════════════════════════════════════════╝
+```
+
+> *Response retraces the filter chain back to the Client. Access logs and metrics emit at completion.*
+
+The dataplane runs as a single binary. Security and policy logic that is parsing-heavy or operationally risky lives in **external agents** behind UDS or gRPC, so a buggy agent cannot take the proxy down with it. See the [Manifesto](MANIFESTO.md) for the reasoning, and [`crates/proxy/docs/architecture.md`](crates/proxy/docs/architecture.md) for the per-phase details.
+
 ## Quick Start
 
 ```bash
-# Install
+# Install (binary only)
 curl -fsSL https://get.zentinelproxy.io | sh
+
+# Install and start as a systemd service (Linux, root or sudo)
+curl -fsSL https://get.zentinelproxy.io | sh -s -- --enable-service
 
 # Or via Cargo
 cargo install zentinel-proxy
@@ -60,6 +90,8 @@ cargo install zentinel-proxy
 docker run -v $(pwd)/zentinel.kdl:/etc/zentinel/zentinel.kdl \
   ghcr.io/zentinelproxy/zentinel --config /etc/zentinel/zentinel.kdl
 ```
+
+On systemd hosts the install script also drops `/etc/systemd/system/zentinel.service`, a sysusers snippet, and a starter config at `/etc/zentinel/zentinel.kdl`. Service enable and start are opt-in via `--enable-service`. See [`crates/proxy/docs/deployment.md`](crates/proxy/docs/deployment.md).
 
 Save this as `zentinel.kdl` — it proxies `localhost:8080` to a backend on port `8081`:
 

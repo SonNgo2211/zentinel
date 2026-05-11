@@ -18,7 +18,7 @@ pub const DEFAULT_CONFIG_KDL: &str = r#"
 // Configuration schema version - used for compatibility checking
 schema-version "1.0"
 
-server {
+system {
     worker-threads 0  // Auto-detect CPU cores
     max-connections 10000
     graceful-shutdown-timeout-secs 30
@@ -195,7 +195,7 @@ pub fn create_default_config() -> Config {
         routes: vec![
             RouteConfig {
                 id: "status".to_string(),
-                priority: Priority::Low,
+                priority: Priority::LOW,
                 matches: vec![MatchCondition::PathPrefix("/".to_string())],
                 upstream: None,
                 service_type: ServiceType::Builtin,
@@ -216,7 +216,7 @@ pub fn create_default_config() -> Config {
             },
             RouteConfig {
                 id: "health".to_string(),
-                priority: Priority::High,
+                priority: Priority::HIGH,
                 matches: vec![
                     MatchCondition::Path("/health".to_string()),
                     MatchCondition::Path("/healthz".to_string()),
@@ -241,7 +241,7 @@ pub fn create_default_config() -> Config {
             },
             RouteConfig {
                 id: "metrics".to_string(),
-                priority: Priority::High,
+                priority: Priority::HIGH,
                 matches: vec![MatchCondition::Path("/metrics".to_string())],
                 upstream: None,
                 service_type: ServiceType::Builtin,
@@ -262,7 +262,7 @@ pub fn create_default_config() -> Config {
             },
             RouteConfig {
                 id: "config".to_string(),
-                priority: Priority::High,
+                priority: Priority::HIGH,
                 matches: vec![
                     MatchCondition::Path("/admin/config".to_string()),
                     MatchCondition::Path("/config".to_string()),
@@ -286,7 +286,7 @@ pub fn create_default_config() -> Config {
             },
             RouteConfig {
                 id: "upstreams".to_string(),
-                priority: Priority::High,
+                priority: Priority::HIGH,
                 matches: vec![
                     MatchCondition::Path("/admin/upstreams".to_string()),
                     MatchCondition::Path("/upstreams".to_string()),
@@ -310,7 +310,7 @@ pub fn create_default_config() -> Config {
             },
             RouteConfig {
                 id: "cache-stats".to_string(),
-                priority: Priority::High,
+                priority: Priority::HIGH,
                 matches: vec![
                     MatchCondition::Path("/admin/cache/stats".to_string()),
                     MatchCondition::Path("/cache/stats".to_string()),
@@ -334,7 +334,7 @@ pub fn create_default_config() -> Config {
             },
             RouteConfig {
                 id: "cache-purge".to_string(),
-                priority: Priority::High,
+                priority: Priority::HIGH,
                 matches: vec![
                     MatchCondition::PathPrefix("/admin/cache/purge".to_string()),
                     MatchCondition::PathPrefix("/cache/purge".to_string()),
@@ -396,5 +396,17 @@ mod tests {
         assert!(config.routes.iter().any(|r| r.id == "upstreams"));
         assert!(config.routes.iter().any(|r| r.id == "cache-stats"));
         assert!(config.routes.iter().any(|r| r.id == "cache-purge"));
+    }
+
+    /// Guard the starter config dropped by the installer at
+    /// /etc/zentinel/zentinel.kdl. Breaking its syntax breaks first-run UX
+    /// for `curl | sh` users, so we parse and validate it in tests.
+    #[test]
+    fn test_starter_config_parses_and_validates() {
+        const STARTER: &str = include_str!("../../../deploy/zentinel.starter.kdl");
+        let config = Config::from_kdl(STARTER).expect("starter config must parse as valid KDL");
+        config
+            .validate()
+            .expect("starter config must pass schema validation");
     }
 }

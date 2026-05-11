@@ -20,7 +20,7 @@ zentinel-agent-protocol = { path = "../../crates/agent-protocol", version = "0.6
 zentinel-common = { path = "../../crates/common", version = "0.6.1" }
 
 # Async runtime
-tokio = { version = "1.50", features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
+tokio = { version = "1.51", features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
 async-trait = "0.1"
 
 # Serialization
@@ -32,17 +32,17 @@ serde_urlencoded = "0.7"
 quick-xml = { version = "0.39", features = ["serialize"] }
 
 # Format-preserving encryption (FF1 - NIST approved)
-aes = "0.8"
+aes = "0.9"
 
 # Regex for pattern matching
 regex = "1.11"
 
 # Hashing (for irreversible masking)
-sha2 = "0.10"
+sha2 = "0.11"
 
 # Token storage
 dashmap = "6.1"
-uuid = { version = "1.22", features = ["v4", "serde"] }
+uuid = { version = "1.23", features = ["v4", "serde"] }
 
 # Base64 encoding for body chunks
 base64 = "0.22"
@@ -56,11 +56,11 @@ anyhow = "1.0"
 thiserror = "2.0"
 
 # Command line
-clap = { version = "4.5", features = ["derive", "env"] }
+clap = { version = "4.6", features = ["derive", "env"] }
 
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]
-tempfile = "3.26"
+tempfile = "3.27"
 tokio-test = "0.4"
