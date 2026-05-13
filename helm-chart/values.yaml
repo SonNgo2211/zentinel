@@ -1,0 +1,45 @@
+# Zentinel Project Agent Configuration
+# Deployment for individual project edge nodes
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/zentinelproxy/zentinel
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+# -- Connection to Central Management
+management:
+  controlPlaneUrl: "http://zentinel-management-control-plane:4000"
+  projectId: "default-project"
+
+# -- WAF Agent Sidecar Configuration
+agentWaf:
+  enabled: true
+  image:
+    repository: ghcr.io/zentinelproxy/zentinel-agent-waf
+    tag: "latest"
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+  config:
+    paranoiaLevel: 1
+    blockMode: true
+    cacheFile: "/etc/zentinel/waf_cache.json"
+  persistence:
+    enabled: true
+    size: 1Gi
+
+# -- Proxy Failure Mode
+proxy:
+  failureMode: "open"
+  timeoutMs: 50
+
+service:
+  type: LoadBalancer
+  httpPort: 80
+  httpsPort: 443
