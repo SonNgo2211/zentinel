@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package zentinel.ai.v1;
+
+service AiAuditor {
+  // Perform deep semantic analysis on a request payload
+  rpc Audit(AuditRequest) returns (AuditResponse);
+}
+
+message AuditRequest {
+  string correlation_id = 1;
+  string payload = 2;
+  string context = 3; // JSON metadata (path, headers, etc.)
+}
+
+message AuditResponse {
+  bool is_attack = 1;
+  float confidence = 2;
+  string reason = 3;
+  map<string, string> metadata = 4;
+}
